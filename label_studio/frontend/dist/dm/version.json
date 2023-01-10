@@ -1,6 +1,6 @@
 {
-  "message": "fix: DEV-3557: Ensure all integer value ranges are correctly captured for packJSON (#114)",
-  "commit": "cde224f477ea20575a870ea4f182c621b7bf676a",
+  "message": "fix: DEV-3810: Restrict tabs deletion for reviewers (#132)\n\n* Introduce granular control over tabs' actions\r\n\r\n* Hide tab menu when no actions available\r\n\r\nCo-authored-by: bmartel <brandonmartel@gmail.com>",
+  "commit": "e6a4997356ef6fc680245dd501794243e5470255",
   "branch": "master",
-  "date": "2022-10-12T12:56:48Z"
+  "date": "2023-01-04T20:06:24Z"
 }
