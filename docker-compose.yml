@@ -41,6 +41,7 @@ services:
       - LOG_LEVEL=DEBUG
       - LABEL_STUDIO_COPY_STATIC_DATA=true
       - LABEL_STUDIO_ALLOW_ORGANIZATION_WEBHOOKS=true
+      - LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK=true
     volumes:
       - ./mydata:/label-studio/data:rw
     command: label-studio-uwsgi
