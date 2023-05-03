@@ -1,6 +1,7 @@
 """This file and its contents are licensed under the Apache License 2.0. Please see the included NOTICE for copyright information and LICENSE for a copy of the license.
 """
 import time
+import requests
 import logging
 import drf_yasg.openapi as openapi
 import json
@@ -9,7 +10,7 @@ import mimetypes
 
 from django.conf import settings
 from django.db import transaction
-from django.http import HttpResponse
+from django.http import HttpResponse, HttpResponseRedirect
 from drf_yasg.utils import swagger_auto_schema
 from django.utils.decorators import method_decorator
 from rest_framework import generics, status
@@ -356,6 +357,19 @@ class ReImportAPI(ImportAPI):
 @method_decorator(name='get', decorator=swagger_auto_schema(
         tags=['Import'],
         operation_summary='Get files list',
+        manual_parameters=[
+            openapi.Parameter(
+                name='all',
+                type=openapi.TYPE_BOOLEAN,
+                in_=openapi.IN_QUERY,
+                description='Set to "true" if you want to retrieve all file uploads'),
+            openapi.Parameter(
+                name='ids',
+                type=openapi.TYPE_ARRAY,
+                in_=openapi.IN_QUERY,
+                items=openapi.Schema(title="File upload ID", type=openapi.TYPE_INTEGER),
+                description='Specify the list of file upload IDs to retrieve, e.g. ids=[1,2,3]'),
+        ],
         operation_description="""
         Retrieve the list of uploaded files used to create labeling tasks for a specific project.
         """
@@ -380,7 +394,7 @@ class FileUploadListAPI(generics.mixins.ListModelMixin,
 
     def get_queryset(self):
         project = generics.get_object_or_404(Project.objects.for_user(self.request.user), pk=self.kwargs.get('pk', 0))
-        if project.is_draft:
+        if project.is_draft or bool_from_request(self.request.query_params, 'all', False):
             # If project is in draft state, we return all uploaded files, ignoring queried ids
             logger.debug(f'Return all uploaded files for draft project {project}')
             return FileUpload.objects.filter(project_id=project.id, user=self.request.user)
@@ -468,8 +482,11 @@ class DownloadStorageData(APIView):
     """ Check auth for nginx auth_request
     """
     swagger_schema = None
-    http_method_names = ['get']
+    http_method_names = ['get', 'head']
     permission_classes = (IsAuthenticated, )
+
+    def head(self, request, *args, **kwargs):
+        return self.get(request, *args, **kwargs)
 
     def get(self, request, *args, **kwargs):
         """ Get export files list
@@ -487,7 +504,7 @@ class DownloadStorageData(APIView):
             file_upload = FileUpload.objects.filter(file=filepath).last()
 
             if file_upload is not None and file_upload.has_permission(request.user):
-                url = file_upload.file.storage.url(file_upload.file.name, storage_url=True)
+                url = file_upload.file.storage.url(file_upload.file.name, storage_url=True, http_method=request.method)
         elif filepath.startswith(settings.AVATAR_PATH):
             user = User.objects.filter(avatar=filepath).first()
             if user is not None and request.user.active_organization.has_user(user):
@@ -506,3 +523,53 @@ class DownloadStorageData(APIView):
         response['X-Accel-Redirect'] = redirect
         response['Content-Disposition'] = 'attachment; filename="{}"'.format(filepath)
         return response
+
+
+class PresignStorageData(APIView):
+    """ A file proxy to presign storage urls.
+    """
+    swagger_schema = None
+    permission_classes = (IsAuthenticated, )
+
+    def get(self, request, *args, **kwargs):
+        """ Get the presigned url for a given fileuri
+        """
+        request = self.request
+        task_id = kwargs.get("task_id")
+        fileuri = request.GET.get('fileuri')
+
+        if fileuri is None or task_id is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            task = Task.objects.get(pk=task_id)
+        except Task.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        project = task.project
+
+        if not project.has_permission(request.user):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+
+        # TODO: cache the presigned storage url by taskId 
+        # cache ttl should be 10s less than presigned ttl so we can reuse as much of that work
+        # as possible and limit the amount of times we are calling out to cloud storages.
+        fileuri = unquote(fileuri)
+
+        url = task.resolve_storage_uri(fileuri, project)
+
+        if url is None:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        # Proxy to presigned url
+        response = HttpResponseRedirect(redirect_to=url, status=status.HTTP_303_SEE_OTHER)
+
+        # NOTE: Temporary workaround:
+        # For some reason even though this is using a 303 which should never cache
+        # it at the moment will cache the redirect when running the python server directly.
+        # This is not an issue when running behind nginx and a more comprehensive solution to this will be coming.
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+
+        return response
+
+
